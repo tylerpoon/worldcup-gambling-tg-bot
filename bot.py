@@ -72,37 +72,47 @@ def sel_label(m, selection: str) -> str:
 
 
 # ---------------- inline keyboards ----------------
-# Callback data format (':' separated; match_id is hex, no colons):
-#   m:<match_id>                 -> show selection buttons
-#   p:<match_id>:<SEL>           -> show stake buttons
-#   s:<match_id>:<SEL>:<amount>  -> place bet (amount is a number or "all")
+# Callback data is ':' separated. <o> is the id of the user who ran /matches;
+# only that user may click (enforced in on_callback). match_id is hex (no
+# colons), selection is HOME/DRAW/AWAY, amount is a number or "all". The longest
+# payload (s:<o>:<match_id>:<SEL>:<amount>) stays under Telegram's 64-byte limit.
+#   m:<o>:<match_id>                 -> show selection buttons
+#   p:<o>:<match_id>:<SEL>           -> show stake buttons
+#   s:<o>:<match_id>:<SEL>:<amount>  -> place bet
 
-def matches_keyboard(matches) -> InlineKeyboardMarkup:
+def matches_keyboard(matches, owner_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(f"{m['home']} vs {m['away']}", callback_data=f"m:{m['match_id']}")]
+        [InlineKeyboardButton(
+            f"{m['home']} vs {m['away']}", callback_data=f"m:{owner_id}:{m['match_id']}"
+        )]
         for m in matches[:10]
     ]
     return InlineKeyboardMarkup(rows)
 
 
-def pick_keyboard(m) -> InlineKeyboardMarkup:
+def pick_keyboard(m, owner_id: int) -> InlineKeyboardMarkup:
     buttons = []
     for sel, odds in (("HOME", m["odds_home"]), ("DRAW", m["odds_draw"]), ("AWAY", m["odds_away"])):
         if odds is not None:
             buttons.append(
                 InlineKeyboardButton(
-                    f"{sel_label(m, sel)} @ {odds}", callback_data=f"p:{m['match_id']}:{sel}"
+                    f"{sel_label(m, sel)} @ {odds}",
+                    callback_data=f"p:{owner_id}:{m['match_id']}:{sel}",
                 )
             )
     return InlineKeyboardMarkup([[b] for b in buttons])
 
 
-def stake_keyboard(match_id: str, selection: str) -> InlineKeyboardMarkup:
+def stake_keyboard(match_id: str, selection: str, owner_id: int) -> InlineKeyboardMarkup:
     row = [
-        InlineKeyboardButton(money(a), callback_data=f"s:{match_id}:{selection}:{a}")
+        InlineKeyboardButton(
+            money(a), callback_data=f"s:{owner_id}:{match_id}:{selection}:{a}"
+        )
         for a in PRESET_STAKES
     ]
-    allin = [InlineKeyboardButton("🅰️ All-in", callback_data=f"s:{match_id}:{selection}:all")]
+    allin = [InlineKeyboardButton(
+        "🅰️ All-in", callback_data=f"s:{owner_id}:{match_id}:{selection}:all"
+    )]
     return InlineKeyboardMarkup([row, allin])
 
 
@@ -229,7 +239,7 @@ async def cmd_matches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=matches_keyboard(matches),
+        reply_markup=matches_keyboard(matches, update.effective_user.id),
     )
 
 
@@ -307,12 +317,19 @@ async def cmd_leaderboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    kind, owner_raw, *rest = query.data.split(":")
+
+    # Only the user who ran /matches may drive its buttons — otherwise another
+    # member could hijack the shared message or place a bet by accident.
+    if str(update.effective_user.id) != owner_raw:
+        await query.answer("These buttons aren't yours — send /matches to bet.",
+                           show_alert=True)
+        return
+    owner_id = int(owner_raw)
     reg(update)
-    parts = query.data.split(":")
-    kind = parts[0]
 
     if kind == "m":  # match chosen -> show selections
-        m = db.get_match(parts[1])
+        m = db.get_match(rest[0])
         if m is None:
             await query.answer("Match not found.", show_alert=True)
             return
@@ -323,11 +340,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"*{m['home']}* vs *{m['away']}*\n{kickoff_str(m['kickoff'])}\n\nPick a result:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=pick_keyboard(m),
+            reply_markup=pick_keyboard(m, owner_id),
         )
 
     elif kind == "p":  # selection chosen -> show stakes
-        match_id, selection = parts[1], parts[2]
+        match_id, selection = rest[0], rest[1]
         m = db.get_match(match_id)
         if m is None:
             await query.answer("Match not found.", show_alert=True)
@@ -337,11 +354,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"*{m['home']}* vs *{m['away']}*\n"
             f"Your pick: *{sel_label(m, selection)}*\n\nHow much do you want to stake?",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=stake_keyboard(match_id, selection),
+            reply_markup=stake_keyboard(match_id, selection, owner_id),
         )
 
     elif kind == "s":  # stake chosen -> place bet
-        match_id, selection, amount_raw = parts[1], parts[2], parts[3]
+        match_id, selection, amount_raw = rest[0], rest[1], rest[2]
         user = db.get_user(update.effective_user.id)
         stake = user["balance"] if amount_raw == "all" else float(amount_raw)
         ok, msg = place_bet(
