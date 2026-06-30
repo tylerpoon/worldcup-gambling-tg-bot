@@ -335,12 +335,35 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+def _book_block(m, book: dict, live: bool) -> str:
+    """One match's per-outcome bet breakdown, as an HTML block."""
+    when = "🔴 in play" if live else html.escape(kickoff_str(m["kickoff"]))
+    header = (
+        f"<b>{html.escape(m['home'])}</b> vs <b>{html.escape(m['away'])}</b> · {when}"
+    )
+    d = book.get(m["match_id"])
+    if not d:
+        return header + "\n   <i>no bets yet</i>"
+    lines = [header]
+    for sel in ("HOME", "DRAW", "AWAY"):
+        entries = sorted(d[sel], key=lambda x: -x[1])
+        label = html.escape(sel_label(m, sel))
+        if entries:
+            total = sum(a for _, a in entries)
+            who = ", ".join(f"{html.escape(u)} {money(a)}" for u, a in entries)
+            lines.append(f"   {label}: <b>{money(total)}</b> — {who}")
+        else:
+            lines.append(f"   {label}: —")
+    return "\n".join(lines)
+
+
 async def cmd_bets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show every player's open bets on upcoming matches, grouped by outcome."""
+    """Show every player's open bets, grouped by outcome — live first, then upcoming."""
     reg(update)
     now = db.now()
-    matches = db.upcoming_matches(now)
-    if not matches:
+    live = db.live_matches(now)
+    upcoming = db.upcoming_matches(now)
+    if not live and not upcoming:
         await update.message.reply_text(
             "No upcoming matches loaded. An admin can run /sync to fetch them."
         )
@@ -348,31 +371,13 @@ async def cmd_bets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # match_id -> {SEL -> [(username, total_stake), ...]}
     book: dict = defaultdict(lambda: {"HOME": [], "DRAW": [], "AWAY": []})
-    for r in db.open_bets_on_upcoming(now):
+    for r in db.open_bets_grouped():
         book[r["match_id"]][r["selection"]].append((r["username"], r["total"]))
 
-    blocks = []
-    for m in matches[:20]:
-        d = book.get(m["match_id"])
-        header = (
-            f"<b>{html.escape(m['home'])}</b> vs <b>{html.escape(m['away'])}</b>"
-            f" · {html.escape(kickoff_str(m['kickoff']))}"
-        )
-        if not d:
-            blocks.append(header + "\n   <i>no bets yet</i>")
-            continue
-        lines = [header]
-        for sel in ("HOME", "DRAW", "AWAY"):
-            entries = sorted(d[sel], key=lambda x: -x[1])
-            if entries:
-                total = sum(a for _, a in entries)
-                who = ", ".join(f"{html.escape(u)} {money(a)}" for u, a in entries)
-                lines.append(f"   {html.escape(sel_label(m, sel))}: <b>{money(total)}</b> — {who}")
-            else:
-                lines.append(f"   {html.escape(sel_label(m, sel))}: —")
-        blocks.append("\n".join(lines))
+    blocks = [_book_block(m, book, live=True) for m in live]
+    blocks += [_book_block(m, book, live=False) for m in upcoming[:20]]
 
-    await _reply_blocks(update, "💰 <b>Money on upcoming matches</b>", blocks)
+    await _reply_blocks(update, "💰 <b>Money on matches</b>", blocks)
 
 
 async def _reply_blocks(update: Update, title: str, blocks: list[str]) -> None:

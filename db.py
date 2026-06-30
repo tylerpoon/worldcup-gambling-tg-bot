@@ -192,6 +192,15 @@ def upcoming_matches(now_ts: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def live_matches(now_ts: int) -> list[sqlite3.Row]:
+    """Matches that have kicked off but aren't settled yet (in play)."""
+    return connect().execute(
+        "SELECT * FROM matches WHERE kickoff <= ? AND status='SCHEDULED' "
+        "ORDER BY kickoff ASC",
+        (now_ts,),
+    ).fetchall()
+
+
 def record_result(match_id: str, home_score: int, away_score: int) -> None:
     c = connect()
     c.execute(
@@ -271,21 +280,19 @@ def settled_bets_for_user(user_id: int, limit: int = 15) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def open_bets_on_upcoming(now_ts: int) -> list[sqlite3.Row]:
-    """Open bets on not-yet-started matches, aggregated per (match, outcome, user).
+def open_bets_grouped() -> list[sqlite3.Row]:
+    """Open bets aggregated per (match, outcome, user) with their total stake.
 
-    One row per user per outcome with their total stake — used by /bets to show
-    where the money is. Matches with no bets won't appear here.
+    Open bets only exist on unsettled matches, so this covers both upcoming and
+    in-play matches. Used by /bets to show where the money is.
     """
     return connect().execute(
         """SELECT b.match_id, b.selection, u.username, SUM(b.stake) AS total
            FROM bets b
            JOIN users u ON b.user_id = u.user_id
-           JOIN matches m ON b.match_id = m.match_id
-           WHERE b.status='OPEN' AND m.status='SCHEDULED' AND m.kickoff > ?
+           WHERE b.status='OPEN'
            GROUP BY b.match_id, b.selection, u.user_id
-           ORDER BY total DESC""",
-        (now_ts,),
+           ORDER BY total DESC"""
     ).fetchall()
 
 
