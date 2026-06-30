@@ -1,0 +1,15 @@
+[project]
+name = "worldcup-gambling-tg-bot"
+version = "0.1.0"
+description = "Telegram bot for betting virtual money on World Cup matches"
+requires-python = ">=3.10"
+dependencies = [
+    "python-telegram-bot[job-queue]==21.6",
+    "httpx==0.27.2",
+    "python-dotenv==1.0.1",
+]
+
+[tool.uv]
+# This is a runnable app (flat modules), not an installable library,
+# so tell uv not to try to build/install the project itself.
+package = false

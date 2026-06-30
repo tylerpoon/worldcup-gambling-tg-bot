@@ -27,11 +27,12 @@ A Telegram bot where players bet virtual money on World Cup match results
    cp .env.example .env
    # edit .env: BOT_TOKEN, ADMIN_IDS, ODDS_API_KEY
    ```
-5. **Install & run**:
+5. **Install & run** (uses [uv](https://docs.astral.sh/uv/)):
    ```bash
-   pip install -r requirements.txt
-   python bot.py
+   uv sync        # creates .venv and installs locked dependencies
+   uv run bot.py  # start the bot
    ```
+   Don't have uv? `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 > When the World Cup isn't running, set `SPORT_KEY` in `.env` to an active
 > competition (e.g. `soccer_epl`) to test against live data. See the full list:
