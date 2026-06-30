@@ -1,0 +1,481 @@
+"""World Cup betting Telegram bot.
+
+Players start with a virtual balance and bet on match results (1X2) at fixed
+odds pulled from The Odds API. Finished matches are settled automatically.
+"""
+import logging
+from datetime import datetime, timezone
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
+
+PRESET_STAKES = [100, 500, 1000, 5000]
+
+import config
+import db
+import odds_api
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("worldcup-bot")
+
+SELECTIONS = {
+    "home": "HOME",
+    "1": "HOME",
+    "draw": "DRAW",
+    "x": "DRAW",
+    "away": "AWAY",
+    "2": "AWAY",
+}
+
+
+# ---------------- helpers ----------------
+
+def is_admin(user_id: int) -> bool:
+    return user_id in config.ADMIN_IDS
+
+
+def money(x: float) -> str:
+    return f"${x:,.0f}"
+
+
+def short(match_id: str) -> str:
+    return match_id[:8]
+
+
+def kickoff_str(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a %d %b %H:%M UTC")
+
+
+def display_name(update: Update) -> str:
+    u = update.effective_user
+    return u.username or u.first_name or str(u.id)
+
+
+def reg(update: Update):
+    """Ensure the calling user exists; return their row."""
+    return db.ensure_user(
+        update.effective_user.id, display_name(update), config.STARTING_BALANCE
+    )
+
+
+def sel_label(m, selection: str) -> str:
+    return {"HOME": m["home"], "DRAW": "Draw", "AWAY": m["away"]}[selection]
+
+
+# ---------------- inline keyboards ----------------
+# Callback data format (':' separated; match_id is hex, no colons):
+#   m:<match_id>                 -> show selection buttons
+#   p:<match_id>:<SEL>           -> show stake buttons
+#   s:<match_id>:<SEL>:<amount>  -> place bet (amount is a number or "all")
+
+def matches_keyboard(matches) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(f"{m['home']} vs {m['away']}", callback_data=f"m:{m['match_id']}")]
+        for m in matches[:10]
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def pick_keyboard(m) -> InlineKeyboardMarkup:
+    buttons = []
+    for sel, odds in (("HOME", m["odds_home"]), ("DRAW", m["odds_draw"]), ("AWAY", m["odds_away"])):
+        if odds is not None:
+            buttons.append(
+                InlineKeyboardButton(
+                    f"{sel_label(m, sel)} @ {odds}", callback_data=f"p:{m['match_id']}:{sel}"
+                )
+            )
+    return InlineKeyboardMarkup([[b] for b in buttons])
+
+
+def stake_keyboard(match_id: str, selection: str) -> InlineKeyboardMarkup:
+    row = [
+        InlineKeyboardButton(money(a), callback_data=f"s:{match_id}:{selection}:{a}")
+        for a in PRESET_STAKES
+    ]
+    allin = [InlineKeyboardButton("🅰️ All-in", callback_data=f"s:{match_id}:{selection}:all")]
+    return InlineKeyboardMarkup([row, allin])
+
+
+# ---------------- shared bet placement ----------------
+
+def place_bet(user_id: int, username: str, chat_id: int, match_id: str,
+              selection: str, stake: float) -> tuple[bool, str]:
+    """Validate and record a bet. Returns (ok, message_to_show)."""
+    user = db.ensure_user(user_id, username, config.STARTING_BALANCE)
+
+    m = db.get_match(match_id)
+    if m is None:
+        return False, "That match no longer exists. Check /matches."
+    if m["status"] != "SCHEDULED" or m["kickoff"] <= db.now():
+        return False, "Betting on that match is closed."
+
+    odds = {"HOME": m["odds_home"], "DRAW": m["odds_draw"], "AWAY": m["odds_away"]}[selection]
+    if odds is None:
+        return False, "No odds available for that selection yet."
+    if stake <= 0:
+        return False, "Amount must be positive."
+    if stake > user["balance"]:
+        return False, f"Insufficient funds. Your balance is {money(user['balance'])}."
+
+    db.adjust_balance(user_id, -stake)
+    db.create_bet(user_id, match_id, selection, stake, odds, chat_id)
+    return True, (
+        f"✅ Bet placed: *{money(stake)}* on *{sel_label(m, selection)}* @ {odds}\n"
+        f"{m['home']} vs {m['away']}\n"
+        f"Potential return: *{money(stake * odds)}*  •  "
+        f"Balance: {money(user['balance'] - stake)}"
+    )
+
+
+# ---------------- player commands ----------------
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = reg(update)
+    await update.message.reply_text(
+        "⚽ *World Cup Betting Bot*\n\n"
+        f"Welcome, {user['username']}! You have {money(user['balance'])} to bet with.\n\n"
+        "*Commands*\n"
+        "/matches – upcoming matches & odds\n"
+        "/bet <code> <home|draw|away> <amount> – place a bet\n"
+        "/mybets – your open bets\n"
+        "/balance – your balance\n"
+        "/leaderboard – top players\n"
+        "/reset – reset back to "
+        f"{money(config.STARTING_BALANCE)}\n",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = reg(update)
+    await update.message.reply_text(
+        f"{user['username']}, your balance is *{money(user['balance'])}*.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    db.set_balance(update.effective_user.id, config.STARTING_BALANCE)
+    await update.message.reply_text(
+        f"🔄 Reset complete. You're back to {money(config.STARTING_BALANCE)}."
+    )
+
+
+async def cmd_matches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    matches = db.upcoming_matches(db.now())
+    if not matches:
+        await update.message.reply_text(
+            "No upcoming matches loaded. An admin can run /sync to fetch them."
+        )
+        return
+
+    lines = ["⚽ *Upcoming matches*\n"]
+    for m in matches[:25]:
+        odds = []
+        if m["odds_home"] is not None:
+            odds.append(f"1 {m['odds_home']}")
+        if m["odds_draw"] is not None:
+            odds.append(f"X {m['odds_draw']}")
+        if m["odds_away"] is not None:
+            odds.append(f"2 {m['odds_away']}")
+        odds_str = "  ".join(odds) if odds else "odds TBD"
+        lines.append(
+            f"`{short(m['match_id'])}`  *{m['home']}* vs *{m['away']}*\n"
+            f"   {kickoff_str(m['kickoff'])}\n"
+            f"   {odds_str}"
+        )
+    lines.append("\nTap a match below to bet, or use `/bet <code> <home|draw|away> <amount>`")
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=matches_keyboard(matches),
+    )
+
+
+async def cmd_bet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    args = ctx.args
+    if len(args) != 3:
+        await update.message.reply_text(
+            "Usage: `/bet <code> <home|draw|away> <amount>`\n"
+            "Example: `/bet 0d8a1f2b home 500`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    code, sel_raw, amount_raw = args
+    selection = SELECTIONS.get(sel_raw.lower())
+    if selection is None:
+        await update.message.reply_text(
+            "Selection must be one of: home / draw / away (or 1 / x / 2)."
+        )
+        return
+
+    try:
+        stake = float(amount_raw)
+    except ValueError:
+        await update.message.reply_text("Amount must be a number.")
+        return
+
+    found = db.resolve_match(code)
+    if not found:
+        await update.message.reply_text("No match with that code. Check /matches.")
+        return
+    if len(found) > 1:
+        await update.message.reply_text(
+            "That code matches several games — use more characters."
+        )
+        return
+
+    ok, msg = place_bet(
+        update.effective_user.id, display_name(update), update.effective_chat.id,
+        found[0]["match_id"], selection, stake,
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_mybets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    bets = db.open_bets_for_user(update.effective_user.id)
+    if not bets:
+        await update.message.reply_text("You have no open bets.")
+        return
+    lines = ["🎟️ *Your open bets*\n"]
+    for b in bets:
+        pick = {"HOME": b["home"], "DRAW": "Draw", "AWAY": b["away"]}[b["selection"]]
+        lines.append(
+            f"*{b['home']}* vs *{b['away']}*\n"
+            f"   {money(b['stake'])} on {pick} @ {b['odds_at_bet']} "
+            f"→ returns {money(b['stake'] * b['odds_at_bet'])}"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_leaderboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    rows = db.leaderboard(10)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏆 *Leaderboard*\n"]
+    for i, r in enumerate(rows):
+        prefix = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{prefix} {r['username']} — {money(r['balance'])}")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------------- callback (inline button) flow ----------------
+
+async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    reg(update)
+    parts = query.data.split(":")
+    kind = parts[0]
+
+    if kind == "m":  # match chosen -> show selections
+        m = db.get_match(parts[1])
+        if m is None:
+            await query.answer("Match not found.", show_alert=True)
+            return
+        if m["status"] != "SCHEDULED" or m["kickoff"] <= db.now():
+            await query.answer("Betting on that match is closed.", show_alert=True)
+            return
+        await query.answer()
+        await query.edit_message_text(
+            f"*{m['home']}* vs *{m['away']}*\n{kickoff_str(m['kickoff'])}\n\nPick a result:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=pick_keyboard(m),
+        )
+
+    elif kind == "p":  # selection chosen -> show stakes
+        match_id, selection = parts[1], parts[2]
+        m = db.get_match(match_id)
+        if m is None:
+            await query.answer("Match not found.", show_alert=True)
+            return
+        await query.answer()
+        await query.edit_message_text(
+            f"*{m['home']}* vs *{m['away']}*\n"
+            f"Your pick: *{sel_label(m, selection)}*\n\nHow much do you want to stake?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=stake_keyboard(match_id, selection),
+        )
+
+    elif kind == "s":  # stake chosen -> place bet
+        match_id, selection, amount_raw = parts[1], parts[2], parts[3]
+        user = db.get_user(update.effective_user.id)
+        stake = user["balance"] if amount_raw == "all" else float(amount_raw)
+        ok, msg = place_bet(
+            update.effective_user.id, display_name(update), update.effective_chat.id,
+            match_id, selection, stake,
+        )
+        await query.answer("Bet placed!" if ok else "Couldn't place bet")
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------------- admin commands ----------------
+
+async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+    await update.message.reply_text("Fetching matches & odds…")
+    try:
+        events = await odds_api.fetch_odds()
+    except Exception as e:  # noqa: BLE001
+        log.exception("sync failed")
+        await update.message.reply_text(f"Sync failed: {e}")
+        return
+    for ev in events:
+        db.upsert_match(
+            ev["match_id"], ev["home"], ev["away"], ev["kickoff"],
+            ev["odds_home"], ev["odds_draw"], ev["odds_away"],
+        )
+    await update.message.reply_text(f"✅ Synced {len(events)} matches.")
+
+
+async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+    settled = await settle_finished_matches(ctx.application)
+    await update.message.reply_text(
+        f"Settled {settled} match(es)." if settled else "Nothing to settle."
+    )
+
+
+# ---------------- settlement ----------------
+
+def _result(home_score: int, away_score: int) -> str:
+    if home_score > away_score:
+        return "HOME"
+    if home_score < away_score:
+        return "AWAY"
+    return "DRAW"
+
+
+async def settle_finished_matches(app: Application) -> int:
+    """Pull recent scores, record results, pay out winning bets. Returns #settled.
+
+    Skips the API call (and spends no credits) when no match is currently in a
+    live window — see db.has_matches_in_play.
+    """
+    if not db.has_matches_in_play(db.now()):
+        return 0
+    try:
+        scores = await odds_api.fetch_scores()
+    except Exception:  # noqa: BLE001
+        log.exception("fetch_scores failed")
+        return 0
+
+    # Record results for any tracked match that just completed.
+    for match_id, info in scores.items():
+        if not info["completed"] or info["home_score"] is None:
+            continue
+        m = db.get_match(match_id)
+        if m is None or m["status"] in ("FINISHED", "SETTLED"):
+            continue
+        db.record_result(match_id, info["home_score"], info["away_score"])
+
+    settled_count = 0
+    for m in db.matches_to_settle():
+        result = _result(m["home_score"], m["away_score"])
+        # Settle every open bet; group the outcomes by the chat they were placed in.
+        by_chat: dict[int, list] = {}
+        for b in db.open_bets_for_match(m["match_id"]):
+            won = b["selection"] == result
+            payout = b["stake"] * b["odds_at_bet"] if won else 0
+            db.adjust_balance(b["user_id"], payout)
+            db.settle_bet(b["bet_id"], "WON" if won else "LOST", payout)
+            chat = b["chat_id"] if b["chat_id"] is not None else _fallback_chat()
+            by_chat.setdefault(chat, []).append(
+                {"username": b["username"], "selection": b["selection"],
+                 "stake": b["stake"], "won": won, "payout": payout}
+            )
+        db.mark_settled(m["match_id"])
+        settled_count += 1
+        await announce_result(app, m, result, by_chat)
+
+    return settled_count
+
+
+def _fallback_chat():
+    """Where to announce bets that have no recorded chat (e.g. legacy bets)."""
+    return next(iter(config.ADMIN_IDS), None)
+
+
+async def announce_result(app, m, result, by_chat: dict):
+    """Post the result and per-player payouts into each chat that bet on it."""
+    label = sel_label(m, result)
+    header = (
+        f"📣 *Result*\n"
+        f"{m['home']} *{m['home_score']}–{m['away_score']}* {m['away']}\n"
+        f"Winner: *{label}*\n"
+    )
+    for chat_id, entries in by_chat.items():
+        if chat_id is None:
+            continue
+        lines = [header]
+        winners = [e for e in entries if e["won"]]
+        losers = [e for e in entries if not e["won"]]
+        if winners:
+            lines.append("\n*Winners*")
+            for e in sorted(winners, key=lambda x: -x["payout"]):
+                pick = sel_label(m, e["selection"])
+                lines.append(
+                    f"🎉 {e['username']}: {money(e['stake'])} on {pick} → "
+                    f"*+{money(e['payout'])}*"
+                )
+        if losers:
+            lines.append(f"\n😢 {len(losers)} losing bet(s).")
+        try:
+            await app.bot.send_message(
+                chat_id, "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("failed to announce result to chat %s", chat_id)
+
+
+async def settle_job(ctx: ContextTypes.DEFAULT_TYPE):
+    n = await settle_finished_matches(ctx.application)
+    if n:
+        log.info("settled %d matches", n)
+
+
+# ---------------- bootstrap ----------------
+
+def main():
+    db.init()
+    app = Application.builder().token(config.BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("matches", cmd_matches))
+    app.add_handler(CommandHandler("bet", cmd_bet))
+    app.add_handler(CommandHandler("mybets", cmd_mybets))
+    app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
+    app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("settle", cmd_settle))
+    app.add_handler(CallbackQueryHandler(on_callback))
+
+    app.job_queue.run_repeating(
+        settle_job, interval=config.SETTLE_INTERVAL, first=config.SETTLE_INTERVAL
+    )
+
+    log.info("Bot starting…")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
