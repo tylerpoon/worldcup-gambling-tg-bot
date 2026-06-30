@@ -79,6 +79,11 @@ def sel_label(m, selection: str) -> str:
 #   m:<o>:<match_id>                 -> show selection buttons
 #   p:<o>:<match_id>:<SEL>           -> show stake buttons
 #   s:<o>:<match_id>:<SEL>:<amount>  -> place bet
+#   c:<o>                            -> cancel / dismiss the flow
+
+def cancel_button(owner_id: int) -> InlineKeyboardButton:
+    return InlineKeyboardButton("✖️ Cancel", callback_data=f"c:{owner_id}")
+
 
 def matches_keyboard(matches, owner_id: int) -> InlineKeyboardMarkup:
     rows = [
@@ -100,7 +105,7 @@ def pick_keyboard(m, owner_id: int) -> InlineKeyboardMarkup:
                     callback_data=f"p:{owner_id}:{m['match_id']}:{sel}",
                 )
             )
-    return InlineKeyboardMarkup([[b] for b in buttons])
+    return InlineKeyboardMarkup([[b] for b in buttons] + [[cancel_button(owner_id)]])
 
 
 def stake_keyboard(match_id: str, selection: str, owner_id: int) -> InlineKeyboardMarkup:
@@ -113,7 +118,7 @@ def stake_keyboard(match_id: str, selection: str, owner_id: int) -> InlineKeyboa
     allin = [InlineKeyboardButton(
         "🅰️ All-in", callback_data=f"s:{owner_id}:{match_id}:{selection}:all"
     )]
-    return InlineKeyboardMarkup([row, allin])
+    return InlineKeyboardMarkup([row, allin, [cancel_button(owner_id)]])
 
 
 # ---------------- shared bet placement ----------------
@@ -367,6 +372,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer("Bet placed!" if ok else "Couldn't place bet")
         await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+    elif kind == "c":  # cancel / dismiss
+        await query.answer("Cancelled")
+        await query.edit_message_text("❌ Cancelled. Send /matches to bet again.")
 
 
 # ---------------- admin commands ----------------
