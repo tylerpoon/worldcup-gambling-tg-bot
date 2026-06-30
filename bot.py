@@ -160,6 +160,7 @@ def commands_text() -> str:
         "/matches – upcoming matches & odds\n"
         "/bet <code> <home|draw|away> <amount> – place a bet\n"
         "/mybets – your open bets\n"
+        "/history – your settled bet results\n"
         "/balance – your balance\n"
         "/leaderboard – top players\n"
         f"/reset – reset back to {money(config.STARTING_BALANCE)}\n"
@@ -304,6 +305,30 @@ async def cmd_mybets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"   {money(b['stake'])} on {pick} @ {b['odds_at_bet']} "
             f"→ returns {money(b['stake'] * b['odds_at_bet'])}"
         )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    bets = db.settled_bets_for_user(update.effective_user.id)
+    if not bets:
+        await update.message.reply_text("No settled bets yet.")
+        return
+    lines = ["📜 *Your recent results*\n"]
+    net = 0.0
+    for b in bets:
+        pick = {"HOME": b["home"], "DRAW": "Draw", "AWAY": b["away"]}[b["selection"]]
+        change = b["payout"] - b["stake"]  # win: +profit, loss: -stake
+        net += change
+        outcome = (
+            f"✅ +{money(change)}" if b["status"] == "WON" else f"❌ −{money(b['stake'])}"
+        )
+        lines.append(
+            f"*{b['home']}* {b['home_score']}–{b['away_score']} *{b['away']}*\n"
+            f"   {money(b['stake'])} on {pick} @ {b['odds_at_bet']} → {outcome}"
+        )
+    sign = "+" if net >= 0 else "−"
+    lines.append(f"\n*Net (last {len(bets)}):* {sign}{money(abs(net))}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -520,6 +545,7 @@ def main():
     app.add_handler(CommandHandler("matches", cmd_matches))
     app.add_handler(CommandHandler("bet", cmd_bet))
     app.add_handler(CommandHandler("mybets", cmd_mybets))
+    app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("settle", cmd_settle))
