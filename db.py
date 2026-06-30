@@ -271,6 +271,24 @@ def settled_bets_for_user(user_id: int, limit: int = 15) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def open_bets_on_upcoming(now_ts: int) -> list[sqlite3.Row]:
+    """Open bets on not-yet-started matches, aggregated per (match, outcome, user).
+
+    One row per user per outcome with their total stake — used by /bets to show
+    where the money is. Matches with no bets won't appear here.
+    """
+    return connect().execute(
+        """SELECT b.match_id, b.selection, u.username, SUM(b.stake) AS total
+           FROM bets b
+           JOIN users u ON b.user_id = u.user_id
+           JOIN matches m ON b.match_id = m.match_id
+           WHERE b.status='OPEN' AND m.status='SCHEDULED' AND m.kickoff > ?
+           GROUP BY b.match_id, b.selection, u.user_id
+           ORDER BY total DESC""",
+        (now_ts,),
+    ).fetchall()
+
+
 def open_bets_for_match(match_id: str) -> list[sqlite3.Row]:
     return connect().execute(
         """SELECT b.*, u.username

@@ -3,7 +3,9 @@
 Players start with a virtual balance and bet on match results (1X2) at fixed
 odds pulled from The Odds API. Finished matches are settled automatically.
 """
+import html
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -160,6 +162,7 @@ def commands_text() -> str:
         "/matches – upcoming matches & odds\n"
         "/bet <code> <home|draw|away> <amount> – place a bet\n"
         "/mybets – your open bets\n"
+        "/bets – everyone's bets on upcoming matches\n"
         "/history – your settled bet results\n"
         "/balance – your balance\n"
         "/leaderboard – top players\n"
@@ -330,6 +333,60 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sign = "+" if net >= 0 else "−"
     lines.append(f"\n*Net (last {len(bets)}):* {sign}{money(abs(net))}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_bets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show every player's open bets on upcoming matches, grouped by outcome."""
+    reg(update)
+    now = db.now()
+    matches = db.upcoming_matches(now)
+    if not matches:
+        await update.message.reply_text(
+            "No upcoming matches loaded. An admin can run /sync to fetch them."
+        )
+        return
+
+    # match_id -> {SEL -> [(username, total_stake), ...]}
+    book: dict = defaultdict(lambda: {"HOME": [], "DRAW": [], "AWAY": []})
+    for r in db.open_bets_on_upcoming(now):
+        book[r["match_id"]][r["selection"]].append((r["username"], r["total"]))
+
+    blocks = []
+    for m in matches[:20]:
+        d = book.get(m["match_id"])
+        header = (
+            f"<b>{html.escape(m['home'])}</b> vs <b>{html.escape(m['away'])}</b>"
+            f" · {html.escape(kickoff_str(m['kickoff']))}"
+        )
+        if not d:
+            blocks.append(header + "\n   <i>no bets yet</i>")
+            continue
+        lines = [header]
+        for sel in ("HOME", "DRAW", "AWAY"):
+            entries = sorted(d[sel], key=lambda x: -x[1])
+            if entries:
+                total = sum(a for _, a in entries)
+                who = ", ".join(f"{html.escape(u)} {money(a)}" for u, a in entries)
+                lines.append(f"   {html.escape(sel_label(m, sel))}: <b>{money(total)}</b> — {who}")
+            else:
+                lines.append(f"   {html.escape(sel_label(m, sel))}: —")
+        blocks.append("\n".join(lines))
+
+    await _reply_blocks(update, "💰 <b>Money on upcoming matches</b>", blocks)
+
+
+async def _reply_blocks(update: Update, title: str, blocks: list[str]) -> None:
+    """Send title + blocks as one or more HTML messages under Telegram's limit."""
+    chunk = title
+    for b in blocks:
+        piece = "\n\n" + b
+        if len(chunk) + len(piece) > 3500:
+            await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+            chunk = b
+        else:
+            chunk += piece
+    if chunk:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
 async def cmd_leaderboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -546,6 +603,7 @@ def main():
     app.add_handler(CommandHandler("bet", cmd_bet))
     app.add_handler(CommandHandler("mybets", cmd_mybets))
     app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("bets", cmd_bets))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("settle", cmd_settle))
