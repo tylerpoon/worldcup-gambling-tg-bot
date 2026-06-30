@@ -139,19 +139,48 @@ def place_bet(user_id: int, username: str, chat_id: int, match_id: str,
 
 # ---------------- player commands ----------------
 
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = reg(update)
-    await update.message.reply_text(
-        "⚽ *World Cup Betting Bot*\n\n"
-        f"Welcome, {user['username']}! You have {money(user['balance'])} to bet with.\n\n"
+def commands_text() -> str:
+    return (
         "*Commands*\n"
         "/matches – upcoming matches & odds\n"
         "/bet <code> <home|draw|away> <amount> – place a bet\n"
         "/mybets – your open bets\n"
         "/balance – your balance\n"
         "/leaderboard – top players\n"
-        "/reset – reset back to "
-        f"{money(config.STARTING_BALANCE)}\n",
+        f"/reset – reset back to {money(config.STARTING_BALANCE)}\n"
+        "/help – show this list"
+    )
+
+
+ADMIN_COMMANDS_TEXT = (
+    "\n\n*Admin*\n"
+    "/sync – fetch fixtures & odds from The Odds API\n"
+    "/settle – force a settlement check now"
+)
+
+
+def commands_block(user_id: int) -> str:
+    """Player commands, plus the admin section when the user is an admin."""
+    text = commands_text()
+    if is_admin(user_id):
+        text += ADMIN_COMMANDS_TEXT
+    return text
+
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = reg(update)
+    await update.message.reply_text(
+        "⚽ *World Cup Betting Bot*\n\n"
+        f"Welcome, {user['username']}! You have {money(user['balance'])} to bet with.\n\n"
+        + commands_block(update.effective_user.id),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg(update)
+    await update.message.reply_text(
+        "⚽ *World Cup Betting Bot*\n\n" + commands_block(update.effective_user.id),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -459,6 +488,7 @@ def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("matches", cmd_matches))
