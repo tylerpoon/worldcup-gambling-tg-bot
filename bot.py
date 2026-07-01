@@ -174,7 +174,8 @@ ADMIN_COMMANDS_TEXT = (
     "\n\n*Admin*\n"
     "/sync – fetch fixtures & odds from The Odds API\n"
     "/settle – force a settlement check now\n"
-    "/reset <@user|id> [amount] – set a player's balance"
+    "/reset <@user|id> [amount] – set a player's balance\n"
+    "/cancel <@user|bet id> – cancel a player's bet & refund"
 )
 
 
@@ -544,6 +545,76 @@ async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: void a player's open bet and refund the stake.
+
+    /cancel <@username|reply>  -> list that player's open bets with ids
+    /cancel <bet_id>           -> cancel the bet and refund the player
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+
+    args = ctx.args
+    reply = update.message.reply_to_message
+
+    # Resolve a target player (by reply or @username) -> list their open bets.
+    target = None
+    if reply is not None:
+        target = db.get_user(reply.from_user.id)
+    elif args and not args[0].lstrip("#").isdigit():
+        target = db.get_user_by_username(args[0].lstrip("@"))
+
+    if target is not None:
+        bets = db.open_bets_for_user(target["user_id"])
+        if not bets:
+            await update.message.reply_text(
+                f"{html.escape(target['username'])} has no open bets.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        lines = [f"🎟️ <b>Open bets for {html.escape(target['username'])}</b>\n"]
+        for b in bets:
+            pick = {"HOME": b["home"], "DRAW": "Draw", "AWAY": b["away"]}[b["selection"]]
+            lines.append(
+                f"<code>#{b['bet_id']}</code>  {money(b['stake'])} on "
+                f"{html.escape(pick)} @ {b['odds_at_bet']} — "
+                f"{html.escape(b['home'])} vs {html.escape(b['away'])}"
+            )
+        lines.append("\nCancel one with /cancel &lt;bet id&gt;")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
+    if not args or not args[0].lstrip("#").isdigit():
+        await update.message.reply_text(
+            "Usage: /cancel <@username> to list a player's open bets\n"
+            "(or reply to their message with /cancel),\n"
+            "then /cancel <bet id> to cancel one and refund the stake."
+        )
+        return
+
+    bet = db.get_bet(int(args[0].lstrip("#")))
+    if bet is None:
+        await update.message.reply_text("No bet with that id.")
+        return
+    if bet["status"] != "OPEN":
+        await update.message.reply_text(
+            f"Bet #{bet['bet_id']} is already {bet['status']} and can't be cancelled."
+        )
+        return
+
+    db.adjust_balance(bet["user_id"], bet["stake"])
+    db.settle_bet(bet["bet_id"], "VOID", bet["stake"])
+    pick = {"HOME": bet["home"], "DRAW": "Draw", "AWAY": bet["away"]}[bet["selection"]]
+    await update.message.reply_text(
+        f"🚫 Cancelled bet #{bet['bet_id']}: {html.escape(bet['username'])}'s "
+        f"{money(bet['stake'])} on {html.escape(pick)} "
+        f"({html.escape(bet['home'])} vs {html.escape(bet['away'])}).\n"
+        f"Refunded <b>{money(bet['stake'])}</b>.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # ---------------- settlement ----------------
 
 def _result(home_score: int, away_score: int) -> str:
@@ -667,6 +738,7 @@ def main():
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("settle", cmd_settle))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     app.job_queue.run_repeating(

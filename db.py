@@ -277,6 +277,17 @@ def create_bet(
     return cur.lastrowid
 
 
+def get_bet(bet_id: int) -> Optional[sqlite3.Row]:
+    return connect().execute(
+        """SELECT b.*, u.username, m.home, m.away
+           FROM bets b
+           JOIN users u ON b.user_id = u.user_id
+           JOIN matches m ON b.match_id = m.match_id
+           WHERE b.bet_id=?""",
+        (bet_id,),
+    ).fetchone()
+
+
 def open_bets_for_user(user_id: int) -> list[sqlite3.Row]:
     return connect().execute(
         """SELECT b.*, m.home, m.away, m.kickoff
