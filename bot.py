@@ -398,11 +398,15 @@ async def cmd_leaderboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reg(update)
     rows = db.leaderboard(10)
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["🏆 *Leaderboard*\n"]
+    lines = ["🏆 <b>Leaderboard</b> <i>(net worth)</i>\n"]
     for i, r in enumerate(rows):
         prefix = medals[i] if i < 3 else f"{i + 1}."
-        lines.append(f"{prefix} {r['username']} — {money(r['balance'])}")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        net = r["balance"] + r["staked"]
+        line = f"{prefix} {html.escape(r['username'])} — <b>{money(net)}</b>"
+        if r["staked"] > 0:
+            line += f"  · {money(r['staked'])} in bets"
+        lines.append(line)
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 # ---------------- callback (inline button) flow ----------------

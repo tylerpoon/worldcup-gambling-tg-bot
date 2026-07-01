@@ -126,8 +126,20 @@ def adjust_balance(user_id: int, delta: float) -> None:
 
 
 def leaderboard(limit: int = 10) -> list[sqlite3.Row]:
+    """Players ranked by net worth (cash balance + stake locked in open bets).
+
+    Each row also carries `staked` (total open-bet stake) so callers can show
+    how much of the net worth is tied up in bets.
+    """
     return connect().execute(
-        "SELECT * FROM users ORDER BY balance DESC LIMIT ?", (limit,)
+        """SELECT u.user_id, u.username, u.balance,
+                  COALESCE(SUM(CASE WHEN b.status='OPEN' THEN b.stake END), 0) AS staked
+           FROM users u
+           LEFT JOIN bets b ON b.user_id = u.user_id
+           GROUP BY u.user_id, u.username, u.balance
+           ORDER BY (u.balance + staked) DESC
+           LIMIT ?""",
+        (limit,),
     ).fetchall()
 
 
