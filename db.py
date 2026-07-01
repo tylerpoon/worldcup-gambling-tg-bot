@@ -88,6 +88,12 @@ def get_user(user_id: int) -> Optional[sqlite3.Row]:
     ).fetchone()
 
 
+def get_user_by_username(username: str) -> Optional[sqlite3.Row]:
+    return connect().execute(
+        "SELECT * FROM users WHERE lower(username)=lower(?)", (username,)
+    ).fetchone()
+
+
 def create_user(user_id: int, username: str, balance: float) -> sqlite3.Row:
     c = connect()
     c.execute(

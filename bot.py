@@ -166,7 +166,6 @@ def commands_text() -> str:
         "/history – your settled bet results\n"
         "/balance – your balance\n"
         "/leaderboard – top players\n"
-        f"/reset – reset back to {money(config.STARTING_BALANCE)}\n"
         "/help – show this list"
     )
 
@@ -174,7 +173,8 @@ def commands_text() -> str:
 ADMIN_COMMANDS_TEXT = (
     "\n\n*Admin*\n"
     "/sync – fetch fixtures & odds from The Odds API\n"
-    "/settle – force a settlement check now"
+    "/settle – force a settlement check now\n"
+    "/reset <@user|id> [amount] – set a player's balance"
 )
 
 
@@ -213,10 +213,54 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    reg(update)
-    db.set_balance(update.effective_user.id, config.STARTING_BALANCE)
+    """Admin-only: set a player's balance. Target by reply, @username, or id."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+
+    args = ctx.args
+    reply = update.message.reply_to_message
+    if reply is not None:
+        tu = reply.from_user
+        target_id = tu.id
+        target_name = tu.username or tu.first_name or str(tu.id)
+        db.ensure_user(target_id, target_name, config.STARTING_BALANCE)
+        amount_raw = args[0] if args else None
+    else:
+        if not args:
+            await update.message.reply_text(
+                "Usage: /reset <@username|user_id> [amount]\n"
+                "Or reply to a player's message with /reset [amount].\n"
+                f"Amount defaults to {money(config.STARTING_BALANCE)}."
+            )
+            return
+        ref = args[0].lstrip("@")
+        amount_raw = args[1] if len(args) > 1 else None
+        user = db.get_user(int(ref)) if ref.isdigit() else db.get_user_by_username(ref)
+        if user is None:
+            await update.message.reply_text(
+                "No such player (they must have used the bot first). "
+                "Try replying to their message instead."
+            )
+            return
+        target_id, target_name = user["user_id"], user["username"]
+
+    if amount_raw is None:
+        amount = float(config.STARTING_BALANCE)
+    else:
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            await update.message.reply_text("Amount must be a number.")
+            return
+        if amount < 0:
+            await update.message.reply_text("Amount can't be negative.")
+            return
+
+    db.set_balance(target_id, amount)
     await update.message.reply_text(
-        f"🔄 Reset complete. You're back to {money(config.STARTING_BALANCE)}."
+        f"🔄 Reset {html.escape(target_name)} to <b>{money(amount)}</b>.",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -561,12 +605,12 @@ def _fallback_chat():
 
 
 async def announce_result(app, m, result, by_chat: dict):
-    """Post the result and per-player payouts into each chat that bet on it."""
-    label = sel_label(m, result)
+    """Post the result with per-player wins and losses into each chat that bet."""
     header = (
-        f"📣 *Result*\n"
-        f"{m['home']} *{m['home_score']}–{m['away_score']}* {m['away']}\n"
-        f"Winner: *{label}*\n"
+        f"📣 <b>Result</b>\n"
+        f"{html.escape(m['home'])} <b>{m['home_score']}–{m['away_score']}</b> "
+        f"{html.escape(m['away'])}\n"
+        f"Winner: <b>{html.escape(sel_label(m, result))}</b>\n"
     )
     for chat_id, entries in by_chat.items():
         if chat_id is None:
@@ -575,18 +619,25 @@ async def announce_result(app, m, result, by_chat: dict):
         winners = [e for e in entries if e["won"]]
         losers = [e for e in entries if not e["won"]]
         if winners:
-            lines.append("\n*Winners*")
-            for e in sorted(winners, key=lambda x: -x["payout"]):
-                pick = sel_label(m, e["selection"])
+            lines.append("\n<b>Winners</b>")
+            for e in sorted(winners, key=lambda x: -(x["payout"] - x["stake"])):
+                pick = html.escape(sel_label(m, e["selection"]))
+                net = e["payout"] - e["stake"]  # profit, matching /history
                 lines.append(
-                    f"🎉 {e['username']}: {money(e['stake'])} on {pick} → "
-                    f"*+{money(e['payout'])}*"
+                    f"🎉 {html.escape(e['username'])}: {money(e['stake'])} on {pick} → "
+                    f"<b>+{money(net)}</b>"
                 )
         if losers:
-            lines.append(f"\n😢 {len(losers)} losing bet(s).")
+            lines.append("\n<b>Losers</b>")
+            for e in sorted(losers, key=lambda x: -x["stake"]):
+                pick = html.escape(sel_label(m, e["selection"]))
+                lines.append(
+                    f"😢 {html.escape(e['username'])}: {money(e['stake'])} on {pick} → "
+                    f"<b>−{money(e['stake'])}</b>"
+                )
         try:
             await app.bot.send_message(
-                chat_id, "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+                chat_id, "\n".join(lines), parse_mode=ParseMode.HTML
             )
         except Exception:  # noqa: BLE001
             log.exception("failed to announce result to chat %s", chat_id)
