@@ -299,12 +299,21 @@ def open_bets_for_user(user_id: int) -> list[sqlite3.Row]:
 
 
 def settled_bets_for_user(user_id: int, limit: int = 15) -> list[sqlite3.Row]:
-    """Most recent settled (WON/LOST) bets for a user, newest first."""
+    """Most recent settled (WON/LOST) bets for a user, newest first.
+
+    Bets on the same match & selection are consolidated into one row: stakes
+    and payouts are summed, and odds_at_bet is the stake-weighted average (the
+    bets may have been placed at different prices).
+    """
     return connect().execute(
-        """SELECT b.*, m.home, m.away, m.home_score, m.away_score
+        """SELECT b.match_id, b.selection, b.status,
+                  SUM(b.stake) AS stake, SUM(b.payout) AS payout,
+                  SUM(b.stake * b.odds_at_bet) / SUM(b.stake) AS odds_at_bet,
+                  m.home, m.away, m.home_score, m.away_score
            FROM bets b JOIN matches m ON b.match_id = m.match_id
            WHERE b.user_id=? AND b.status IN ('WON','LOST')
-           ORDER BY b.bet_id DESC LIMIT ?""",
+           GROUP BY b.match_id, b.selection, b.status
+           ORDER BY MAX(b.bet_id) DESC LIMIT ?""",
         (user_id, limit),
     ).fetchall()
 

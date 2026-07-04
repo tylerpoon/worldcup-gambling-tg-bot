@@ -378,7 +378,7 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         lines.append(
             f"*{b['home']}* {b['home_score']}–{b['away_score']} *{b['away']}*\n"
-            f"   {money(b['stake'])} on {pick} @ {b['odds_at_bet']} → {outcome}"
+            f"   {money(b['stake'])} on {pick} @ {round(b['odds_at_bet'], 2)} → {outcome}"
         )
     sign = "+" if net >= 0 else "−"
     lines.append(f"\n*Net (last {len(bets)}):* {sign}{money(abs(net))}")
