@@ -6,7 +6,8 @@ odds pulled from The Odds API. Finished matches are settled automatically.
 import html
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -53,8 +54,12 @@ def short(match_id: str) -> str:
     return match_id[:8]
 
 
+DISPLAY_TZ = ZoneInfo("America/New_York")
+
+
 def kickoff_str(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a %d %b %H:%M UTC")
+    # %Z renders EDT/EST as appropriate for the date.
+    return datetime.fromtimestamp(ts, tz=DISPLAY_TZ).strftime("%a %d %b %H:%M %Z")
 
 
 def display_name(update: Update) -> str:
