@@ -5,6 +5,7 @@ odds pulled from The Odds API. Finished matches are settled automatically.
 """
 import html
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -179,6 +180,7 @@ ADMIN_COMMANDS_TEXT = (
     "\n\n*Admin*\n"
     "/sync – fetch fixtures & odds from The Odds API\n"
     "/settle – force a settlement check now\n"
+    "/result <code> <home>-<away> – record a score manually & settle\n"
     "/reset <@user|id> [amount] – set a player's balance\n"
     "/cancel <@user|bet id> – cancel a player's bet & refund"
 )
@@ -566,6 +568,57 @@ async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_result(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: manually record a final score and settle the match.
+
+    For when the scores API lags or a match has aged out of its lookback
+    window. Usage: /result <code> <home_score>-<away_score>
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+
+    usage = (
+        "Usage: `/result <code> <home_score>-<away_score>`\n"
+        "Example: `/result 0d8a1f2b 2-1`\n"
+        "The first number is the *home* team's score. "
+        "Records the result and settles all bets on the match."
+    )
+    args = ctx.args
+    nums = [p for p in re.split(r"[-–: ]+", " ".join(args[1:]))] if len(args) >= 2 else []
+    if len(nums) != 2 or not all(n.isdigit() for n in nums):
+        await update.message.reply_text(usage, parse_mode=ParseMode.MARKDOWN)
+        return
+    home_score, away_score = int(nums[0]), int(nums[1])
+
+    found = db.resolve_match(args[0])
+    if not found:
+        await update.message.reply_text("No match with that code.")
+        return
+    if len(found) > 1:
+        await update.message.reply_text(
+            "That code matches several games — use more characters."
+        )
+        return
+    m = found[0]
+    if m["status"] == "SETTLED":
+        await update.message.reply_text("That match is already settled.")
+        return
+    if m["kickoff"] > db.now():
+        await update.message.reply_text("That match hasn't kicked off yet.")
+        return
+
+    db.record_result(m["match_id"], home_score, away_score)
+    settled = await settle_recorded_matches(ctx.application)
+    winner = sel_label(m, _result(home_score, away_score))
+    await update.message.reply_text(
+        f"📝 Recorded {html.escape(m['home'])} <b>{home_score}–{away_score}</b> "
+        f"{html.escape(m['away'])} (winner: <b>{html.escape(winner)}</b>). "
+        f"Settled {settled} match(es).",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin-only: void a player's open bet and refund the stake.
 
@@ -677,7 +730,7 @@ async def settle_finished_matches(
     if not pending:
         note("no unsettled matches that have kicked off — is the match in the DB?")
     for m in pending:
-        label = f"{m['home']} vs {m['away']}"
+        label = f"{short(m['match_id'])} {m['home']} vs {m['away']}"
         if m["status"] == "FINISHED":
             continue  # result already recorded; settled below
         info = scores.get(m["match_id"])
@@ -690,6 +743,11 @@ async def settle_finished_matches(
         else:
             db.record_result(m["match_id"], info["home_score"], info["away_score"])
 
+    return await settle_recorded_matches(app)
+
+
+async def settle_recorded_matches(app: Application) -> int:
+    """Pay out and announce every match with a recorded result. Returns #settled."""
     settled_count = 0
     for m in db.matches_to_settle():
         result = _result(m["home_score"], m["away_score"])
@@ -780,6 +838,7 @@ def main():
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("settle", cmd_settle))
+    app.add_handler(CommandHandler("result", cmd_result))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
 
