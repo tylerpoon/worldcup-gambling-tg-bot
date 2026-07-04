@@ -229,6 +229,15 @@ def record_result(match_id: str, home_score: int, away_score: int) -> None:
     c.commit()
 
 
+def unsettled_past_matches(now_ts: int) -> list[sqlite3.Row]:
+    """Matches that have kicked off but aren't settled yet, oldest first."""
+    return connect().execute(
+        "SELECT * FROM matches WHERE status != 'SETTLED' AND kickoff <= ? "
+        "ORDER BY kickoff ASC",
+        (now_ts,),
+    ).fetchall()
+
+
 def matches_to_settle() -> list[sqlite3.Row]:
     return connect().execute(
         "SELECT * FROM matches WHERE status='FINISHED'"

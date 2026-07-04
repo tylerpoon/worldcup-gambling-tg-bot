@@ -558,10 +558,12 @@ async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admins only.")
         return
-    settled = await settle_finished_matches(ctx.application, force=True)
-    await update.message.reply_text(
-        f"Settled {settled} match(es)." if settled else "Nothing to settle."
-    )
+    report: list[str] = []
+    settled = await settle_finished_matches(ctx.application, force=True, report=report)
+    msg = f"Settled {settled} match(es)." if settled else "Nothing to settle."
+    if report:
+        msg += "\n" + "\n".join(f"• {r}" for r in report)
+    await update.message.reply_text(msg)
 
 
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -644,30 +646,49 @@ def _result(home_score: int, away_score: int) -> str:
     return "DRAW"
 
 
-async def settle_finished_matches(app: Application, force: bool = False) -> int:
+async def settle_finished_matches(
+    app: Application, force: bool = False, report: list[str] | None = None
+) -> int:
     """Pull recent scores, record results, pay out winning bets. Returns #settled.
 
     Skips the API call (and spends no credits) when no match is currently in a
     live window — see db.has_matches_in_play. `force` (manual /settle) bypasses
     that gate and looks back as far as the scores API allows, so matches that
     missed their live window (e.g. bot downtime) can still be settled.
+
+    When `report` is given, appends a human-readable reason for every match
+    that has kicked off but could not be settled.
     """
+    def note(msg: str) -> None:
+        if report is not None:
+            report.append(msg)
+
     if not force and not db.has_matches_in_play(db.now()):
         return 0
     try:
         scores = await odds_api.fetch_scores(days_from=3 if force else 1)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         log.exception("fetch_scores failed")
+        note(f"score fetch failed: {e}")
         return 0
 
-    # Record results for any tracked match that just completed.
-    for match_id, info in scores.items():
-        if not info["completed"] or info["home_score"] is None:
-            continue
-        m = db.get_match(match_id)
-        if m is None or m["status"] in ("FINISHED", "SETTLED"):
-            continue
-        db.record_result(match_id, info["home_score"], info["away_score"])
+    # Record results for any tracked kicked-off match that has completed.
+    pending = db.unsettled_past_matches(db.now())
+    if not pending:
+        note("no unsettled matches that have kicked off — is the match in the DB?")
+    for m in pending:
+        label = f"{m['home']} vs {m['away']}"
+        if m["status"] == "FINISHED":
+            continue  # result already recorded; settled below
+        info = scores.get(m["match_id"])
+        if info is None:
+            note(f"{label}: not in the scores API response (finished >3 days ago?)")
+        elif not info["completed"]:
+            note(f"{label}: API hasn't marked it completed yet")
+        elif info["home_score"] is None:
+            note(f"{label}: marked completed but no usable score returned")
+        else:
+            db.record_result(m["match_id"], info["home_score"], info["away_score"])
 
     settled_count = 0
     for m in db.matches_to_settle():
