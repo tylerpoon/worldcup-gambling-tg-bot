@@ -558,7 +558,7 @@ async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admins only.")
         return
-    settled = await settle_finished_matches(ctx.application)
+    settled = await settle_finished_matches(ctx.application, force=True)
     await update.message.reply_text(
         f"Settled {settled} match(es)." if settled else "Nothing to settle."
     )
@@ -644,16 +644,18 @@ def _result(home_score: int, away_score: int) -> str:
     return "DRAW"
 
 
-async def settle_finished_matches(app: Application) -> int:
+async def settle_finished_matches(app: Application, force: bool = False) -> int:
     """Pull recent scores, record results, pay out winning bets. Returns #settled.
 
     Skips the API call (and spends no credits) when no match is currently in a
-    live window — see db.has_matches_in_play.
+    live window — see db.has_matches_in_play. `force` (manual /settle) bypasses
+    that gate and looks back as far as the scores API allows, so matches that
+    missed their live window (e.g. bot downtime) can still be settled.
     """
-    if not db.has_matches_in_play(db.now()):
+    if not force and not db.has_matches_in_play(db.now()):
         return 0
     try:
-        scores = await odds_api.fetch_scores()
+        scores = await odds_api.fetch_scores(days_from=3 if force else 1)
     except Exception:  # noqa: BLE001
         log.exception("fetch_scores failed")
         return 0
