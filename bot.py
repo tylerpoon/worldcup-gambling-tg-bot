@@ -516,23 +516,37 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- admin commands ----------------
 
+async def sync_matches() -> int:
+    """Fetch fixtures & odds from The Odds API and upsert them. Returns count."""
+    events = await odds_api.fetch_odds()
+    for ev in events:
+        db.upsert_match(
+            ev["match_id"], ev["home"], ev["away"], ev["kickoff"],
+            ev["odds_home"], ev["odds_draw"], ev["odds_away"],
+        )
+    return len(events)
+
+
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Admins only.")
         return
     await update.message.reply_text("Fetching matches & odds…")
     try:
-        events = await odds_api.fetch_odds()
+        n = await sync_matches()
     except Exception as e:  # noqa: BLE001
         log.exception("sync failed")
         await update.message.reply_text(f"Sync failed: {e}")
         return
-    for ev in events:
-        db.upsert_match(
-            ev["match_id"], ev["home"], ev["away"], ev["kickoff"],
-            ev["odds_home"], ev["odds_draw"], ev["odds_away"],
-        )
-    await update.message.reply_text(f"✅ Synced {len(events)} matches.")
+    await update.message.reply_text(f"✅ Synced {n} matches.")
+
+
+async def sync_job(ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        n = await sync_matches()
+        log.info("auto-sync: %d matches", n)
+    except Exception:  # noqa: BLE001
+        log.exception("auto-sync failed")
 
 
 async def cmd_settle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -744,6 +758,9 @@ def main():
     app.job_queue.run_repeating(
         settle_job, interval=config.SETTLE_INTERVAL, first=config.SETTLE_INTERVAL
     )
+    # Refresh fixtures/odds automatically so new matches (e.g. knockout rounds)
+    # appear without an admin having to run /sync. Also runs once at startup.
+    app.job_queue.run_repeating(sync_job, interval=config.SYNC_INTERVAL, first=10)
 
     log.info("Bot starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

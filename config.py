@@ -28,4 +28,5 @@ ODDS_REGION = os.getenv("ODDS_REGION", "eu")
 
 STARTING_BALANCE = int(os.getenv("STARTING_BALANCE", "10000"))
 SETTLE_INTERVAL = int(os.getenv("SETTLE_INTERVAL", "600"))
+SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "21600"))  # fixture/odds refresh, 6h
 DB_PATH = os.getenv("DB_PATH", "worldcup.db")
