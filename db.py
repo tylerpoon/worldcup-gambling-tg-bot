@@ -149,6 +149,32 @@ def leaderboard(limit: int = 10) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def player_stats() -> list[sqlite3.Row]:
+    """All-time betting stats per player, biggest total stake first.
+
+    VOID (cancelled/refunded) bets are excluded throughout. `outcomes` counts
+    distinct (match, selection) combos; `net` and `biggest_win` cover settled
+    bets only.
+    """
+    return connect().execute(
+        """SELECT u.user_id, u.username,
+                  COUNT(*) AS n_bets,
+                  SUM(b.stake) AS staked,
+                  COUNT(DISTINCT b.match_id) AS matches,
+                  COUNT(DISTINCT b.match_id || ':' || b.selection) AS outcomes,
+                  SUM(b.status='WON') AS won,
+                  SUM(b.status='LOST') AS lost,
+                  COALESCE(SUM(CASE WHEN b.status IN ('WON','LOST')
+                                    THEN b.payout - b.stake END), 0) AS net,
+                  MAX(CASE WHEN b.status='WON' THEN b.payout - b.stake END)
+                      AS biggest_win
+           FROM users u JOIN bets b ON b.user_id = u.user_id
+           WHERE b.status != 'VOID'
+           GROUP BY u.user_id, u.username
+           ORDER BY staked DESC"""
+    ).fetchall()
+
+
 # ---------------- matches ----------------
 
 def upsert_match(

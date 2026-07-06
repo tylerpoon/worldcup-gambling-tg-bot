@@ -172,6 +172,7 @@ def commands_text() -> str:
         "/history – your settled bet results\n"
         "/balance – your balance\n"
         "/leaderboard – top players\n"
+        "/stats – all-time player betting stats\n"
         "/help – show this list"
     )
 
@@ -448,6 +449,33 @@ async def _reply_blocks(update: Update, title: str, blocks: list[str]) -> None:
             chunk += piece
     if chunk:
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """All-time betting stats for every player who has placed a bet."""
+    reg(update)
+    rows = db.player_stats()
+    if not rows:
+        await update.message.reply_text("No bets placed yet.")
+        return
+    blocks = []
+    for r in rows:
+        lines = [
+            f"<b>{html.escape(r['username'])}</b>",
+            f"   Staked <b>{money(r['staked'])}</b> across {r['n_bets']} bets · "
+            f"{r['matches']} matches · {r['outcomes']} outcomes",
+        ]
+        if r["won"] + r["lost"] > 0:
+            sign = "+" if r["net"] >= 0 else "−"
+            line = (
+                f"   Record {r['won']}W–{r['lost']}L · "
+                f"Net <b>{sign}{money(abs(r['net']))}</b>"
+            )
+            if r["biggest_win"] is not None:
+                line += f" · Best +{money(r['biggest_win'])}"
+            lines.append(line)
+        blocks.append("\n".join(lines))
+    await _reply_blocks(update, "📊 <b>Player stats</b>", blocks)
 
 
 async def cmd_leaderboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -840,6 +868,7 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("bets", cmd_bets))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("settle", cmd_settle))
     app.add_handler(CommandHandler("result", cmd_result))
