@@ -307,6 +307,28 @@ def open_bets_for_user(user_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def open_bets_for_user_grouped(user_id: int) -> list[sqlite3.Row]:
+    """A user's open bets consolidated per match & selection.
+
+    Stakes are summed, `potential` is the total return, odds_at_bet is the
+    stake-weighted average, and `n_bets` counts the bets folded together.
+    Individual rows (with bet ids) come from open_bets_for_user.
+    """
+    return connect().execute(
+        """SELECT b.match_id, b.selection,
+                  SUM(b.stake) AS stake,
+                  SUM(b.stake * b.odds_at_bet) AS potential,
+                  SUM(b.stake * b.odds_at_bet) / SUM(b.stake) AS odds_at_bet,
+                  COUNT(*) AS n_bets,
+                  m.home, m.away, m.kickoff
+           FROM bets b JOIN matches m ON b.match_id = m.match_id
+           WHERE b.user_id=? AND b.status='OPEN'
+           GROUP BY b.match_id, b.selection
+           ORDER BY m.kickoff ASC""",
+        (user_id,),
+    ).fetchall()
+
+
 def settled_bets_for_user(user_id: int, limit: int = 15) -> list[sqlite3.Row]:
     """Most recent settled (WON/LOST) bets for a user, newest first.
 

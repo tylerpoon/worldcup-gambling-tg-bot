@@ -348,17 +348,21 @@ async def cmd_bet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_mybets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reg(update)
-    bets = db.open_bets_for_user(update.effective_user.id)
+    bets = db.open_bets_for_user_grouped(update.effective_user.id)
     if not bets:
         await update.message.reply_text("You have no open bets.")
         return
     lines = ["🎟️ *Your open bets*\n"]
+    last_match = None
     for b in bets:
+        if b["match_id"] != last_match:
+            lines.append(f"*{b['home']}* vs *{b['away']}*")
+            last_match = b["match_id"]
         pick = {"HOME": b["home"], "DRAW": "Draw", "AWAY": b["away"]}[b["selection"]]
+        count = f" ({b['n_bets']} bets)" if b["n_bets"] > 1 else ""
         lines.append(
-            f"*{b['home']}* vs *{b['away']}*\n"
-            f"   {money(b['stake'])} on {pick} @ {b['odds_at_bet']} "
-            f"→ returns {money(b['stake'] * b['odds_at_bet'])}"
+            f"   {money(b['stake'])} on {pick} @ {round(b['odds_at_bet'], 2)} "
+            f"→ returns {money(b['potential'])}{count}"
         )
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
