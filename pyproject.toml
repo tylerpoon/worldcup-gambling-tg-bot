@@ -1,5 +1,5 @@
 [project]
-name = "worldcup-gambling-tg-bot"
+name = "football-betting-tg-bot"
 version = "0.1.0"
 description = "Telegram bot for betting virtual money on World Cup matches"
 requires-python = ">=3.10"

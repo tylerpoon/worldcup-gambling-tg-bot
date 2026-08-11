@@ -23,10 +23,13 @@ ADMIN_IDS = {
     int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x
 }
 
-SPORT_KEY = os.getenv("SPORT_KEY", "soccer_fifa_world_cup")
-ODDS_REGION = os.getenv("ODDS_REGION", "eu")
+SPORT_KEY = os.getenv("SPORT_KEY", "soccer_epl")
+# Human-friendly competition name shown in bot messages. Change this and
+# SPORT_KEY together to point the bot at a different competition.
+LEAGUE_NAME = os.getenv("LEAGUE_NAME", "Premier League")
+ODDS_REGION = os.getenv("ODDS_REGION", "uk")
 
 STARTING_BALANCE = int(os.getenv("STARTING_BALANCE", "10000"))
 SETTLE_INTERVAL = int(os.getenv("SETTLE_INTERVAL", "600"))
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "21600"))  # fixture/odds refresh, 6h
-DB_PATH = os.getenv("DB_PATH", "worldcup.db")
+DB_PATH = os.getenv("DB_PATH", "epl.db")

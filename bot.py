@@ -1,7 +1,8 @@
-"""World Cup betting Telegram bot.
+"""Football betting Telegram bot.
 
 Players start with a virtual balance and bet on match results (1X2) at fixed
 odds pulled from The Odds API. Finished matches are settled automatically.
+The competition is configured via SPORT_KEY / LEAGUE_NAME (default: EPL).
 """
 import html
 import logging
@@ -29,7 +30,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
-log = logging.getLogger("worldcup-bot")
+log = logging.getLogger("betting-bot")
 
 SELECTIONS = {
     "home": "HOME",
@@ -198,7 +199,7 @@ def commands_block(user_id: int) -> str:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = reg(update)
     await update.message.reply_text(
-        "⚽ *World Cup Betting Bot*\n\n"
+        f"⚽ *{config.LEAGUE_NAME} Betting Bot*\n\n"
         f"Welcome, {user['username']}! You have {money(user['balance'])} to bet with.\n\n"
         + commands_block(update.effective_user.id),
         parse_mode=ParseMode.MARKDOWN,
@@ -208,7 +209,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reg(update)
     await update.message.reply_text(
-        "⚽ *World Cup Betting Bot*\n\n" + commands_block(update.effective_user.id),
+        f"⚽ *{config.LEAGUE_NAME} Betting Bot*\n\n"
+        + commands_block(update.effective_user.id),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -878,8 +880,8 @@ def main():
     app.job_queue.run_repeating(
         settle_job, interval=config.SETTLE_INTERVAL, first=config.SETTLE_INTERVAL
     )
-    # Refresh fixtures/odds automatically so new matches (e.g. knockout rounds)
-    # appear without an admin having to run /sync. Also runs once at startup.
+    # Refresh fixtures/odds automatically so each new gameweek's matches appear
+    # without an admin having to run /sync. Also runs once ~10s after startup.
     app.job_queue.run_repeating(sync_job, interval=config.SYNC_INTERVAL, first=10)
 
     log.info("Bot starting…")
