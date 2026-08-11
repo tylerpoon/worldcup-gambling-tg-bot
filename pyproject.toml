@@ -1,7 +1,7 @@
 [project]
-name = "football-betting-tg-bot"
+name = "football-gambling-tg-bot"
 version = "0.1.0"
-description = "Telegram bot for betting virtual money on World Cup matches"
+description = "Telegram bot for betting virtual money on football matches"
 requires-python = ">=3.10"
 dependencies = [
     "python-telegram-bot[job-queue]==21.6",

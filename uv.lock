@@ -51,7 +51,7 @@ wheels = [
 ]
 
 [[package]]
-name = "football-betting-tg-bot"
+name = "football-gambling-tg-bot"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
