@@ -61,6 +61,11 @@ def init() -> None:
             created_at  INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_bets_user ON bets(user_id);
         CREATE INDEX IF NOT EXISTS idx_bets_match ON bets(match_id, status);
         """
@@ -129,6 +134,14 @@ def adjust_balance(user_id: int, delta: float) -> None:
         "UPDATE users SET balance = balance + ? WHERE user_id=?", (delta, user_id)
     )
     c.commit()
+
+
+def credit_all_users(amount: float) -> int:
+    """Add `amount` to every player's balance. Returns the number credited."""
+    c = connect()
+    cur = c.execute("UPDATE users SET balance = balance + ?", (amount,))
+    c.commit()
+    return cur.rowcount
 
 
 def leaderboard(limit: int = 10) -> list[sqlite3.Row]:
@@ -404,5 +417,32 @@ def settle_bet(bet_id: int, status: str, payout: float) -> None:
     c = connect()
     c.execute(
         "UPDATE bets SET status=?, payout=? WHERE bet_id=?", (status, payout, bet_id)
+    )
+    c.commit()
+
+
+def known_chats() -> list[int]:
+    """Distinct chats the bot has seen bets placed in (for broadcasts)."""
+    rows = connect().execute(
+        "SELECT DISTINCT chat_id FROM bets WHERE chat_id IS NOT NULL"
+    ).fetchall()
+    return [r["chat_id"] for r in rows]
+
+
+# ---------------- settings (key/value) ----------------
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    row = connect().execute(
+        "SELECT value FROM settings WHERE key=?", (key,)
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_setting(key: str, value: str) -> None:
+    c = connect()
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
     )
     c.commit()

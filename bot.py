@@ -64,6 +64,15 @@ def kickoff_str(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=DISPLAY_TZ).strftime("%a %d %b %H:%M %Z")
 
 
+def interval_str(seconds: int) -> str:
+    """Human-friendly period, e.g. 'week', '2 weeks', '3 days', '12 hours'."""
+    for unit, size in (("week", 7 * 86400), ("day", 86400), ("hour", 3600)):
+        if seconds % size == 0 and seconds >= size:
+            n = seconds // size
+            return unit if n == 1 else f"{n} {unit}s"
+    return f"{seconds}s"
+
+
 def display_name(update: Update) -> str:
     u = update.effective_user
     return u.username or u.first_name or str(u.id)
@@ -184,8 +193,12 @@ ADMIN_COMMANDS_TEXT = (
     "/settle – force a settlement check now\n"
     "/result <code> <home>-<away> – record a score manually & settle\n"
     "/reset <@user|id> [amount] – set a player's balance\n"
-    "/cancel <@user|bet id> – cancel a player's bet & refund"
+    "/cancel <@user|bet id> – cancel a player's bet & refund\n"
+    "/allowance [amount|off] – weekly top-up for every player"
 )
+
+ALLOWANCE_AMOUNT_KEY = "allowance_amount"
+ALLOWANCE_LAST_PAID_KEY = "allowance_last_paid"
 
 
 def commands_block(user_id: int) -> str:
@@ -723,6 +736,122 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ---------------- allowance ----------------
+
+def _allowance_amount() -> float:
+    raw = db.get_setting(ALLOWANCE_AMOUNT_KEY)
+    try:
+        return float(raw) if raw else 0.0
+    except ValueError:
+        return 0.0
+
+
+async def cmd_allowance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: set (or disable) a recurring top-up paid to every player.
+
+    /allowance            -> show current status
+    /allowance <amount>   -> pay every player <amount> each period
+    /allowance off        -> stop the allowance
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Admins only.")
+        return
+
+    every = interval_str(config.ALLOWANCE_INTERVAL)
+    args = ctx.args
+
+    if not args:
+        amount = _allowance_amount()
+        if amount <= 0:
+            await update.message.reply_text(
+                f"No allowance is set. Use /allowance <amount> to pay every player "
+                f"that much per {every} (e.g. /allowance 1000)."
+            )
+            return
+        last = int(db.get_setting(ALLOWANCE_LAST_PAID_KEY) or db.now())
+        nxt = last + config.ALLOWANCE_INTERVAL
+        await update.message.reply_text(
+            f"💸 Allowance: <b>{money(amount)}</b> per player every {every}.\n"
+            f"Next payout: <b>{html.escape(kickoff_str(nxt))}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if args[0].lower() in ("off", "stop", "none", "0"):
+        db.set_setting(ALLOWANCE_AMOUNT_KEY, "0")
+        await update.message.reply_text("💸 Allowance disabled.")
+        return
+
+    try:
+        amount = float(args[0])
+    except ValueError:
+        await update.message.reply_text("Amount must be a number (or 'off').")
+        return
+    if amount <= 0:
+        await update.message.reply_text(
+            "Amount must be positive. Use /allowance off to stop it."
+        )
+        return
+
+    was_on = _allowance_amount() > 0
+    db.set_setting(ALLOWANCE_AMOUNT_KEY, str(amount))
+    # Start the clock when newly enabling, so the first payout lands one full
+    # period from now rather than immediately. Changing the amount while it's
+    # already running keeps the existing schedule.
+    if not was_on or not db.get_setting(ALLOWANCE_LAST_PAID_KEY):
+        db.set_setting(ALLOWANCE_LAST_PAID_KEY, str(db.now()))
+    nxt = int(db.get_setting(ALLOWANCE_LAST_PAID_KEY)) + config.ALLOWANCE_INTERVAL
+    await update.message.reply_text(
+        f"✅ Allowance set to <b>{money(amount)}</b> per player every {every}.\n"
+        f"Next payout: <b>{html.escape(kickoff_str(nxt))}</b>.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def announce_allowance(app: Application, amount: float, n: int) -> None:
+    text = (
+        f"💸 <b>Allowance day!</b>\n"
+        f"Every player just received <b>{money(amount)}</b>. Bet wisely."
+    )
+    for chat_id in db.known_chats():
+        try:
+            await app.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+        except Exception:  # noqa: BLE001
+            log.exception("failed to announce allowance to chat %s", chat_id)
+
+
+async def pay_allowance_if_due(app: Application) -> int:
+    """Credit every player when a full allowance period has elapsed.
+
+    Idempotent per period: the last-paid timestamp is only advanced after a
+    successful payout, so a restart mid-period won't double-pay.
+    """
+    amount = _allowance_amount()
+    if amount <= 0:
+        return 0
+    last = db.get_setting(ALLOWANCE_LAST_PAID_KEY)
+    if last is None:
+        # Enabled without a start time somehow — start the clock now.
+        db.set_setting(ALLOWANCE_LAST_PAID_KEY, str(db.now()))
+        return 0
+    if db.now() - int(last) < config.ALLOWANCE_INTERVAL:
+        return 0
+    n = db.credit_all_users(amount)
+    db.set_setting(ALLOWANCE_LAST_PAID_KEY, str(db.now()))
+    if n:
+        await announce_allowance(app, amount, n)
+    return n
+
+
+async def allowance_job(ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        n = await pay_allowance_if_due(ctx.application)
+        if n:
+            log.info("paid allowance to %d players", n)
+    except Exception:  # noqa: BLE001
+        log.exception("allowance payout failed")
+
+
 # ---------------- settlement ----------------
 
 def _result(home_score: int, away_score: int) -> str:
@@ -875,6 +1004,7 @@ def main():
     app.add_handler(CommandHandler("settle", cmd_settle))
     app.add_handler(CommandHandler("result", cmd_result))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("allowance", cmd_allowance))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     app.job_queue.run_repeating(
@@ -883,6 +1013,10 @@ def main():
     # Refresh fixtures/odds automatically so each new gameweek's matches appear
     # without an admin having to run /sync. Also runs once ~10s after startup.
     app.job_queue.run_repeating(sync_job, interval=config.SYNC_INTERVAL, first=10)
+    # Pay out the weekly allowance when due (no-op until an admin sets one).
+    app.job_queue.run_repeating(
+        allowance_job, interval=config.ALLOWANCE_CHECK_INTERVAL, first=30
+    )
 
     log.info("Bot starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

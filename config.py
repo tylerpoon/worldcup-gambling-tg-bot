@@ -32,4 +32,11 @@ ODDS_REGION = os.getenv("ODDS_REGION", "uk")
 STARTING_BALANCE = int(os.getenv("STARTING_BALANCE", "10000"))
 SETTLE_INTERVAL = int(os.getenv("SETTLE_INTERVAL", "600"))
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "21600"))  # fixture/odds refresh, 6h
+
+# How often each player is topped up (seconds). Default: one week. The payout
+# amount is set at runtime by an admin with /allowance; 0 (the default) is off.
+ALLOWANCE_INTERVAL = int(os.getenv("ALLOWANCE_INTERVAL", str(7 * 24 * 3600)))
+# How often the bot checks whether an allowance payout is due.
+ALLOWANCE_CHECK_INTERVAL = int(os.getenv("ALLOWANCE_CHECK_INTERVAL", "3600"))
+
 DB_PATH = os.getenv("DB_PATH", "epl.db")

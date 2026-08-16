@@ -71,6 +71,15 @@ Common keys: `soccer_epl`, `soccer_uefa_champs_league`, `soccer_spain_la_liga`,
 | `/sync` | admin | Fetch fixtures & odds from The Odds API |
 | `/settle` | admin | Force a settlement check now |
 | `/reset <@user\|id> [amount]` | admin | Set a player's balance |
+| `/allowance [amount\|off]` | admin | Set (or stop) a recurring top-up for every player |
+
+### Weekly allowance
+Keep a game going even after players go bust: `/allowance 1000` pays every player
+$1,000 on a recurring schedule (weekly by default). `/allowance` on its own shows
+the current amount and next payout; `/allowance off` stops it. Change the cadence
+with `ALLOWANCE_INTERVAL` in `.env` (seconds; `604800` = one week). The first
+payout lands one full period after you enable it, and the schedule survives
+restarts without double-paying.
 
 ### Two ways to bet
 - **Tap-to-bet (inline buttons):** run `/matches`, tap a match → tap a result
